@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Starts the Rails API (:3000) and the Vite React frontend (:5173) together via foreman.
+
+if [ ! -d frontend/node_modules ]; then
+  echo "Installing frontend dependencies..."
+  npm --prefix frontend install
+fi
+
+exec bundle exec foreman start -f Procfile.dev "$@"

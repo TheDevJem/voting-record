@@ -1,0 +1,23 @@
+default: &default
+  dispatchers:
+    - polling_interval: 1
+      batch_size: 500
+  workers:
+    # The local LLM generates one summary at a time, so this queue gets exactly one thread.
+    - queues: summaries
+      threads: 1
+      processes: 1
+      polling_interval: 1
+    - queues: default
+      threads: 3
+      processes: <%= ENV.fetch("JOB_CONCURRENCY", 1) %>
+      polling_interval: 1
+
+development:
+  <<: *default
+
+test:
+  <<: *default
+
+production:
+  <<: *default
