@@ -61,12 +61,11 @@
     <orderEntry type="library" scope="PROVIDED" name="erb (v6.0.7, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="erubi (v1.13.1, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="et-orbi (v1.4.2, asdf: 3.3.5) [gem]" level="project" />
-    <orderEntry type="library" scope="PROVIDED" name="ffi (v1.17.4, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="foreman (v0.90.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="fugit (v1.14.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="globalid (v1.4.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="i18n (v1.15.2, asdf: 3.3.5) [gem]" level="project" />
-    <orderEntry type="library" scope="PROVIDED" name="image_processing (v1.14.0, asdf: 3.3.5) [gem]" level="project" />
+    <orderEntry type="library" scope="PROVIDED" name="image_processing (v2.2.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="io-console (v0.9.5, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="irb (v1.19.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="json (v3.1.0, asdf: 3.3.5) [gem]" level="project" />
@@ -77,7 +76,6 @@
     <orderEntry type="library" scope="PROVIDED" name="loofah (v2.25.3, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="mail (v2.9.1, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="marcel (v1.2.1, asdf: 3.3.5) [gem]" level="project" />
-    <orderEntry type="library" scope="PROVIDED" name="mini_magick (v5.4.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="mini_mime (v1.1.5, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="minitest (v6.1.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="msgpack (v1.8.7, asdf: 3.3.5) [gem]" level="project" />
@@ -120,7 +118,6 @@
     <orderEntry type="library" scope="PROVIDED" name="rubocop-rails (v2.38.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="TEST" name="rubocop-rails-omakase (v1.1.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="ruby-progressbar (v1.13.0, asdf: 3.3.5) [gem]" level="project" />
-    <orderEntry type="library" scope="PROVIDED" name="ruby-vips (v2.3.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="securerandom (v0.4.1, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="solid_cable (v4.1.0, asdf: 3.3.5) [gem]" level="project" />
     <orderEntry type="library" scope="PROVIDED" name="solid_cache (v1.0.10, asdf: 3.3.5) [gem]" level="project" />

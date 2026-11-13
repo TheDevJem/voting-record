@@ -35,10 +35,13 @@ module Summaries
     def chamber_name = member.chamber == "senate" ? "Senate" : "House"
 
     def member_info
-      seat = if member.chamber == "senate" then "Senator from #{member.state}"
-      elsif member.district then "Representative for #{member.state} district #{member.district}"
-      else "Representative for #{member.state} (at-large or delegate seat)"
-      end
+      seat = if member.chamber == "senate"
+               "Senator from #{member.state}"
+             elsif member.district
+               "Representative for #{member.state} district #{member.district}"
+             else
+               "Representative for #{member.state} (at-large or delegate seat)"
+             end
       # Only the current term's start is stored (not first election), so name it precisely; a field called
       # "serving_since" led the model to write "serving since 2025" for a senator first elected in 2018.
       { name: member.full_name, party: member.party, seat:, current_term_began: member.term_start_year }
