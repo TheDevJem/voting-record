@@ -22,7 +22,7 @@ module Api
       render status: summary.in_progress? ? :accepted : :ok, json: {
         status: summary.status,
         content: summary.content,
-        stale: summary.content.present? && summary.stale?(fingerprint),
+        stale: fingerprint.present? && summary.content.present? && summary.stale?(fingerprint),
         error: summary.error,
         model: summary.model,
         generated_at: summary.generated_at,

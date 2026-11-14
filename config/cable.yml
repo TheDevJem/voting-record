@@ -1,9 +1,7 @@
-# Async adapter only works within the same process, so for manually triggering cable updates from a console,
-# and seeing results in the browser, you must do so from the web console (running inside the dev process),
-# not a terminal started via bin/rails console! Add "console" to any action or any ERB template view
-# to make the web console appear.
+# Summaries are generated in the bin/jobs process, so development needs an adapter that works across
+# processes. The postgresql adapter uses LISTEN/NOTIFY on the primary database: no extra database or Redis.
 development:
-  adapter: async
+  adapter: postgresql
 
 test:
   adapter: test

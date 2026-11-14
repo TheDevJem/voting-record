@@ -5,11 +5,14 @@ import {
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { api } from "../api.js";
+import { consumer } from "../cable.js";
 
-const POLL_MS = 5000;
+// Status changes arrive over Action Cable. This slow poll is only a safety net for when the WebSocket can't
+// connect at all (e.g. a proxy that blocks it); normally the card refetches once per status change.
+const FALLBACK_POLL_MS = 60000;
 
 // AI-generated profile from a local Ollama model. Generation runs in a background job on the server and takes
-// a few minutes on CPU, so this polls until the summary is ready.
+// a few minutes on CPU; the server pushes a message over Action Cable each time the summary's status changes.
 export default function SummaryCard({ id }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
@@ -22,7 +25,7 @@ export default function SummaryCard({ id }) {
       .then((data) => {
         setSummary(data);
         setError(null);
-        if (data.status === "pending" || data.status === "running") timer.current = setTimeout(() => load(), POLL_MS);
+        if (data.status === "pending" || data.status === "running") timer.current = setTimeout(() => load(), FALLBACK_POLL_MS);
       })
       .catch((err) => setError(err));
   };
@@ -31,8 +34,17 @@ export default function SummaryCard({ id }) {
     setSummary(null);
     setError(null);
     load();
+    const subscription = consumer.subscriptions.create(
+      { channel: "MemberSummaryChannel", member_id: id },
+      {
+        // Also fires after a reconnect: refetch in case a status change was broadcast while we were offline.
+        connected: () => load(),
+        received: () => load(),
+      }
+    );
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => {
+      subscription.unsubscribe();
       clearTimeout(timer.current);
       clearInterval(tick);
     };

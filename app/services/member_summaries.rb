@@ -20,7 +20,6 @@ module MemberSummaries
   # Never starts a second job while one is running. Failed summaries wait for an explicit Retry.
   def ensure(member, force: false)
     summary = member.summary || member.create_summary!(status: "pending")
-    fingerprint = current_fingerprint(member)
 
     brand_new = summary.previously_new_record?
     busy = summary.in_progress? && !summary.stalled? && !brand_new
@@ -30,6 +29,9 @@ module MemberSummaries
       summary.update!(status: "pending", error: nil)
       GenerateMemberSummaryJob.perform_later(member.id)
     end
+    # The fingerprint only feeds the `stale` flag, which is meaningless while a summary is being written.
+    # Skipping it here keeps the frontend's 5-second status polls from rebuilding the whole packet each time.
+    fingerprint = summary.in_progress? ? nil : current_fingerprint(member)
     [ summary, fingerprint ]
   end
 end

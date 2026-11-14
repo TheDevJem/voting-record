@@ -27,6 +27,8 @@ export default defineConfig({
     proxy: {
       "/api": { target: RAILS_URL, configure: handleProxyErrors },
       "/up": { target: RAILS_URL, configure: handleProxyErrors },
+      // Action Cable WebSocket: pushes summary status changes instead of the card polling.
+      "/cable": { target: RAILS_URL, ws: true },
     },
   },
 });
