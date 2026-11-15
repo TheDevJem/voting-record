@@ -42,9 +42,9 @@ module Summaries
              else
                "Representative for #{member.state} (at-large or delegate seat)"
              end
-      # Only the current term's start is stored (not first election), so name it precisely; a field called
-      # "serving_since" led the model to write "serving since 2025" for a senator first elected in 2018.
-      { name: member.full_name, party: member.party, seat:, current_term_began: member.term_start_year }
+      # No term dates: only the current term's start is stored, not first election, and any year here (even
+      # named "current_term_began") led the model to write "serving since 2025" for senators first elected years earlier.
+      { name: member.full_name, party: member.party, seat: }
     end
 
     def committees

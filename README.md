@@ -173,6 +173,40 @@ and restart `bin/dev`.
 Smaller models are more likely to make mistakes, so check summaries against the Votes and Bills tabs. The
 page labels every summary as AI-generated for this reason.
 
+### Evaluating summaries
+
+To tell whether a prompt or model change actually helped, score summaries automatically.
+`Summaries::Evaluation` (`app/services/summaries/evaluation.rb`) checks each summary against the record it was
+written from. Each check matches one rule in the prompt:
+
+| Check | Fails when |
+|---|---|
+| `evidence_grounded` | An evidence item isn't in the record, either word for word or as a rewording whose bill numbers, nominations and dates are all real |
+| `cited_ids_exist` | Any bill or nomination number anywhere in the summary isn't in the record |
+| `party_agreement` | `voting_pattern` gives a different percentage, or computes extra ones |
+| `neutral_language` | Labels like "progressive", "moderate" or "pro-…" appear (unless the record itself uses the word) |
+| `no_tenure_claim` | It says how long they've served ("serving since 2025"), which the record can't show |
+| `topics_from_policy_areas` | A key issue isn't one of `top_policy_areas` |
+| `evidence_on_topic` | A bill tagged `[Taxation]` is used as evidence for a different topic (strict on purpose) |
+| `limitations_match_scope` | `limitations` leaves out the Congress or the roll-call count from `data_scope` |
+| `format` | Wrong number of issues or evidence items, sentence counts off, or markdown in the text |
+
+These catch mistakes a program can see. They can't tell whether a sentence fairly describes a bill, so keep reading
+some summaries yourself.
+
+```bash
+bin/rails summaries:eval                                   # score summaries already saved in the app
+bin/rails summaries:eval:generate MODEL=qwen3:8b LIMIT=5   # generate fresh ones (not saved to the app) and score them
+bin/rails summaries:eval:compare                           # last 4 runs side by side
+```
+
+`generate` defaults to members that already have a saved summary, so runs line up. You can also pass
+`MEMBERS=S000033,F000479`. Each run is saved to `tmp/evals/*.json`, along with each summary's text and check
+details, so `compare` can show which change moved which check. Summaries saved before the app stored their input
+are skipped, because rebuilding the record from today's data flags bills that have since dropped off the "recent"
+lists. A typical loop: run `generate`, change `prompt.rb` and bump `VERSION`, run `generate` again, then `compare`.
+Small models vary from run to run, so treat a difference of one summary as noise.
+
 ## API
 
 The frontend uses these JSON endpoints. Errors come back as `{ "error": { "code", "message" } }`.
@@ -192,10 +226,11 @@ The frontend uses these JSON endpoints. Errors come back as `{ "error": { "code"
 ```
 app/controllers/api/        JSON API
 app/services/congress/      Data sync from Congress.gov, senate.gov, congress-legislators
-app/services/summaries/     AI summary: data packet, prompt + schema, Ollama client
+app/services/summaries/     AI summary: data packet, prompt + schema, Ollama client, evaluation
 app/services/district_lookup.rb   Address -> district via the Census Geocoder
 app/jobs/                   Background summary generation
 lib/tasks/congress.rake     Sync tasks
+lib/tasks/summaries.rake    Summary evaluation tasks
 frontend/src/               React app (pages/, components/)
 Procfile.dev, bin/dev       Run Rails + Vite together
 ```
