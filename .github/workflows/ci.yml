@@ -55,7 +55,8 @@ jobs:
 
     services:
       postgres:
-        image: postgres
+        # pgvector: the question box's search index uses the `vector` extension (same version as local installs).
+        image: pgvector/pgvector:0.8.0-pg17
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

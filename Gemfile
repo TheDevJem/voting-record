@@ -59,3 +59,5 @@ group :development do
   # Runs the Rails API and the Vite frontend together (see Procfile.dev / bin/dev)
   gem "foreman", require: false
 end
+
+gem "neighbor", "~> 1.2"

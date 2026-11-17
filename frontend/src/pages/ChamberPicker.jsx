@@ -3,6 +3,7 @@ import GavelIcon from "@mui/icons-material/Gavel";
 import GroupsIcon from "@mui/icons-material/Groups";
 import { useNavigate } from "react-router-dom";
 import FindRepresentatives from "../components/FindRepresentatives.jsx";
+import AskBox from "../components/AskBox.jsx";
 
 const CHAMBERS = [
   { key: "senate", title: "Senate", blurb: "100 senators, two per state", Icon: GavelIcon },
@@ -14,6 +15,7 @@ export default function ChamberPicker() {
   return (
     <>
       <FindRepresentatives />
+      <AskBox />
       <Typography variant="h4" gutterBottom>
         Browse by chamber
       </Typography>

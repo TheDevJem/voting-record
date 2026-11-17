@@ -10,9 +10,10 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_11_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_17_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+  enable_extension "vector"
 
   create_table "bill_sponsorships", force: :cascade do |t|
     t.bigint "member_id", null: false
@@ -36,6 +37,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000003) do
     t.string "policy_area"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.text "summary"
+    t.datetime "summary_fetched_at"
     t.index ["congress", "bill_type", "number"], name: "index_bills_on_congress_and_bill_type_and_number", unique: true
   end
 
@@ -100,6 +103,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000003) do
     t.index ["chamber", "last_name"], name: "index_members_on_chamber_and_last_name"
   end
 
+  create_table "questions", force: :cascade do |t|
+    t.string "token", null: false
+    t.text "text", null: false
+    t.string "status", default: "pending", null: false
+    t.string "stage"
+    t.jsonb "plan"
+    t.jsonb "result"
+    t.text "answer"
+    t.string "model"
+    t.jsonb "stats"
+    t.text "error"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["token"], name: "index_questions_on_token", unique: true
+  end
+
   create_table "roll_calls", force: :cascade do |t|
     t.string "chamber", null: false
     t.integer "congress", null: false
@@ -115,8 +134,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_11_000003) do
     t.integer "nays"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "amendment_label"
+    t.string "amendment_author"
+    t.text "amendment_purpose"
+    t.datetime "details_fetched_at"
     t.index ["chamber", "congress", "session", "number"], name: "idx_on_chamber_congress_session_number_ea78bcfd9d", unique: true
     t.index ["voted_at"], name: "index_roll_calls_on_voted_at"
+  end
+
+  create_table "search_documents", force: :cascade do |t|
+    t.string "record_type", null: false
+    t.bigint "record_id", null: false
+    t.string "kind", null: false
+    t.string "chamber"
+    t.text "content", null: false
+    t.string "content_digest", null: false
+    t.vector "embedding", limit: 768
+    t.virtual "searchable", type: :tsvector, as: "to_tsvector('english'::regconfig, content)", stored: true
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["embedding"], name: "index_search_documents_on_embedding", opclass: :vector_cosine_ops, using: :hnsw
+    t.index ["kind"], name: "index_search_documents_on_kind"
+    t.index ["record_type", "record_id"], name: "index_search_documents_on_record_type_and_record_id", unique: true
+    t.index ["searchable"], name: "index_search_documents_on_searchable", using: :gin
   end
 
   create_table "vote_positions", force: :cascade do |t|

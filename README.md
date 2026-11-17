@@ -14,6 +14,12 @@ street address or state, and read an AI-generated summary of each member produce
   Census Geocoder) or a state name or code on the home page to get your two senators and House member(s).
   Address and state suggestions appear as you type (from [Photon](https://photon.komoot.io), OpenStreetMap data);
   pick one to search right away, or just press Enter on what you typed.
+- **Ask about votes and bills (experimental):** type a question like "How many Democrats support Israel?",
+  "How many Democrats voted to fund Israel?" or "Which senators cosponsored bills on Social Security?". General
+  questions draw on both votes and sponsored bills. A local model finds the matching votes and bills and decides
+  which way each one points; the counts and member lists come straight from the database. The page shows
+  every vote or bill it used, how it read each vote, and the party breakdown, and you can untick any to update
+  the totals. See [Asking questions](#asking-questions).
 - **Browse by chamber:** Senate or House, then a member list you can search by name or state and filter by party.
 - **Member profiles:**
   - Header: party, seat, photo, website, phone and office address, plus counts of synced votes, sponsored and
@@ -32,8 +38,8 @@ street address or state, and read an AI-generated summary of each member produce
 |---|---|---|
 | Ruby | 3.4.9 | See `.tool-versions` (asdf). rbenv/rvm/mise work too. |
 | Node.js | 20+ (developed on 22.12) | For the Vite frontend |
-| PostgreSQL | 14+ (developed on 17) | Must be reachable over TCP on `localhost` |
-| Ollama | 0.6+ | Only needed for AI summaries. [Download](https://ollama.com/download) |
+| PostgreSQL | 14+ (developed on 17) | Must be reachable over TCP on `localhost`, with the [pgvector](https://github.com/pgvector/pgvector) extension (0.8+) installed. See [step 2](#2-install-dependencies-and-create-the-database) |
+| Ollama | 0.6+ | Only needed for AI summaries and the question box. [Download](https://ollama.com/download) |
 | Congress.gov API key | — | Free: [sign up here](https://api.congress.gov/sign-up/). Has an hourly request limit. |
 
 Hardware for AI summaries: `qwen3:14b` is a ~9 GB download and needs **16 GB+ RAM**. It runs on CPU if you
@@ -69,6 +75,15 @@ bin/setup --skip-server
 This installs gems and frontend packages, then creates and migrates the database (the same as running `bundle install`,
 `npm --prefix frontend install`, and `bin/rails db:prepare`).
 
+**pgvector:** the migrations enable the `vector` extension, so install it into your Postgres first. Packages exist
+for most systems (`brew install pgvector`, `apt install postgresql-17-pgvector`, or the `pgvector/pgvector` Docker
+image). For a Postgres installed with asdf or from source, build it against that install's `pg_config`:
+
+```bash
+git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+cd /tmp/pgvector && make PG_CONFIG="$(which pg_config)" && make install PG_CONFIG="$(which pg_config)"
+```
+
 ### 3. Load Congress data
 
 ```bash
@@ -85,6 +100,8 @@ are shorter since they only add new votes. See [Data sync](#data-sync) for optio
 
 ```bash
 ollama pull qwen3:14b
+ollama pull nomic-embed-text   # ~270 MB; search embeddings for the question box
+bin/rails search:index         # build the question box's search index (first run ~40 min on CPU)
 ```
 
 Make sure Ollama is running (`ollama serve`, or the desktop app/system service). Without it, the app works normally
@@ -122,6 +139,8 @@ All settings come from environment variables, loaded from `.env` in development.
 | `DATABASE_PASSWORD` | (none) | Postgres password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server |
 | `OLLAMA_MODEL` | `qwen3:14b` | Model used for summaries (must be pulled first) |
+| `ASK_MODEL` | `OLLAMA_MODEL` | Model used by the question box, if you want a different (e.g. smaller, faster) one |
+| `EMBED_MODEL` | `nomic-embed-text` | Embedding model for the search index (768 dimensions; changing it means a new migration and re-index) |
 | `VOTE_LIMIT` | `500` (`.env.example` sets `100` for a faster first sync) | Most recent roll calls to sync per chamber |
 | `BILL_MIN_CONGRESS` | the current Congress | Oldest Congress of bills to keep |
 
@@ -131,7 +150,7 @@ Data is copied into Postgres so the app is fast and doesn't hit external APIs on
 
 | Source | What | Key needed |
 |---|---|---|
-| [Congress.gov API](https://api.congress.gov) | Current members (and their chamber), contact info, sponsored/cosponsored bills, House roll-call votes | `CONGRESS_KEY` |
+| [Congress.gov API](https://api.congress.gov) | Current members (and their chamber), contact info, sponsored/cosponsored bills, House roll-call votes, House amendment purposes, CRS bill summaries | `CONGRESS_KEY` |
 | [senate.gov roll-call XML](https://www.senate.gov/legislative/votes_new.htm) | Senate votes, matched to members by state + last name | No |
 | [unitedstates/congress-legislators](https://github.com/unitedstates/congress-legislators) | Committee and subcommittee assignments (not in the Congress.gov API) | No |
 | [US Census Geocoder](https://geocoding.geo.census.gov) | Address → congressional district, looked up live when someone searches | No |
@@ -143,10 +162,17 @@ bin/rails congress:members                  # run this first if running steps in
 bin/rails congress:committees
 bin/rails congress:votes                    # VOTE_LIMIT=500: most recent roll calls per chamber
 bin/rails congress:bills                    # BILL_MIN_CONGRESS=119: oldest Congress of bills to keep
+bin/rails congress:vote_details             # House amendment purposes + CRS summaries of voted-on bills (incremental)
 ```
 
+House roll-call records only name the bill an amendment belongs to ("H.R. 8800"), so `congress:vote_details` looks
+up each House amendment vote's amendment (number, sponsor, purpose), and the Congressional Research Service summary
+of every bill that was voted on. The question box searches that text, and the Votes cards show it. Each vote is
+looked up once; summaries are re-checked after 30 days, since CRS adds new ones as a bill advances.
+
 Re-run `congress:sync` whenever you want fresh data (e.g. weekly). It's safe to repeat: members who leave office
-are removed and only new votes are downloaded. AI summaries aren't regenerated automatically when data changes
+are removed and only new votes are downloaded. It finishes by updating the question box's search index (only new or
+changed votes and bills are embedded); if Ollama isn't running it skips that step with a warning. AI summaries aren't regenerated automatically when data changes
 (each one takes minutes on a CPU); their card shows a "votes or bills have been updated" note with a Regenerate
 button instead.
 
@@ -180,6 +206,38 @@ profile to see the new prompt's output. To try a prompt without the UI:
 ```bash
 bin/rails runner 'puts JSON.pretty_generate(Summaries::Generator.new.call(Member.find_by!(bioguide_id: "S000148"))[:content])'
 ```
+
+## Asking questions
+
+The **Ask about votes and bills** box on the home page answers questions in five stages, shown live on the page
+(`Ask::Pipeline`, `app/services/ask/`). It's retrieval-augmented, but the model never counts:
+
+1. **Plan:** the model turns the question into a search phrase and keywords, a party and chamber filter, and the
+   stance being asked about ("support Israel"), and decides whether it's about votes, sponsored bills, or both
+   (general "do they support X" questions use both).
+2. **Search:** `Search::Retriever` finds candidate votes or bills in `search_documents`, combining embedding
+   similarity (pgvector, `nomic-embed-text`) with Postgres full-text search weighted by how rare each word is.
+   House "rule" votes (on floor procedure) are left out, and near-identical votes collapse to one.
+3. **Read:** the model decides which candidates are on topic, and for bills whether sponsoring one matches the
+   stance or works against it (a resolution disapproving an arms sale counts against "support Israel"). For each vote, `Ask::VoteMeaning` first works out
+   **what a Yea means** from the motion and the measure using fixed rules. For example, a Yea on discharging a
+   *disapproval* resolution moves the resolution that would block an arms sale, so it's opposition to the sale.
+   The model only says whether a Yea matches the stance. (Asked to work out direction on its own, it read those
+   votes backwards.)
+4. **Count:** SQL (`Ask::Tally`) gives each vote's party breakdown and member list and each bill's sponsors;
+   `Ask::Combined` counts distinct members across all of them: matching by vote, by bill, in total, on the
+   opposite side, and on both sides.
+5. **Write:** the model writes 2–4 sentences from those computed numbers.
+
+The page shows every vote or bill used, how each vote was read, and what was found but judged not relevant. Unticking
+a vote or bill updates the totals. Questions and their results are saved in `questions`, and the page URL
+(`?question=<token>`) reopens one.
+
+Limits: answers only cover the synced data (the most recent roll calls per chamber and current members' bills
+in the 119th Congress). Vague stances need judgment calls (is a resolution requesting a human-rights report
+"against" a country?), which is why every reason is shown and every item can be unticked. A question about both
+votes and bills reads each separately, so it takes about a minute longer. Like summaries, questions run in the `jobs` process on the single-threaded `summaries` queue, and take a
+few minutes with a 14B–27B model on CPU. Set `ASK_MODEL` to a smaller model to trade accuracy for speed.
 
 ### Choosing a model
 
@@ -243,9 +301,12 @@ The frontend uses these JSON endpoints. Errors come back as `{ "error": { "code"
 | `GET /api/members/:bioguide_id/bills?role=sponsor\|cosponsor&page=` | Bills (20 per page) |
 | `GET /api/members/:bioguide_id/summary` | AI summary, read-only (`status: "none"` if never generated, `202` while generating) |
 | `POST /api/members/:bioguide_id/summary` | Generate or regenerate the AI summary |
+| `POST /api/questions` `{ "q": "..." }` | Starts answering a question (`202`); returns its `token` |
+| `GET /api/questions/:token` | Status and stage, then the answer, plan, and the votes/bills used with counts |
 | `GET /api/address_suggestions?q=<partial address or state>` | Up to 5 `{ label, kind: "address"\|"state" }` suggestions (3+ characters; cached for a day) |
 | `GET /api/representatives?q=<address or state>` | Senators + House member(s); for an address, also the matched address and district |
 | `WS /cable` → `MemberSummaryChannel` (`member_id`) | Summary status changes (Action Cable) |
+| `WS /cable` → `QuestionChannel` (`token`) | Question stage and status changes |
 
 ## Project layout
 
@@ -254,14 +315,17 @@ app/controllers/api/        JSON API
 app/channels/               Action Cable channel for live summary status
 app/services/congress/      Data sync from Congress.gov, senate.gov, congress-legislators
 app/services/summaries/     AI summary: data packet, prompt + schema, Ollama client, evaluation
+app/services/search/        Search index for the question box: embeddings, indexer, hybrid retriever
+app/services/ask/           Question box: pipeline, prompts, vote meaning rules, SQL tally
 app/services/district_lookup.rb   Address -> district via the Census Geocoder
 app/services/address_suggestions.rb  Address autocomplete via Photon
 app/services/member_summaries.rb  When to start a summary job
 app/jobs/                   Background summary generation
 lib/tasks/congress.rake     Sync tasks
 lib/tasks/summaries.rake    Summary evaluation tasks
+lib/tasks/search.rake       Search index task
 frontend/src/               React app (pages/, components/)
-test/                       Minitest tests (summary evaluation, address suggestions)
+test/                       Minitest tests (summary evaluation, address suggestions, search, question pipeline)
 Procfile.dev, bin/dev       Run Rails + Vite + jobs together
 ```
 
@@ -305,6 +369,14 @@ the district lookup can resolve.
 The Census Geocoder is down or rejecting requests (it sometimes returns a "Request Rejected" page). Searching by
 state still works.
 
+**The question box says it needs a search index**
+Run `ollama pull nomic-embed-text`, then `bin/rails search:index`. `PG::UndefinedFile ... extension "vector"` during
+`db:prepare` means pgvector isn't installed in your Postgres (see [step 2](#2-install-dependencies-and-create-the-database)).
+
+**Questions or summaries are much slower than usual**
+Check `ollama ps`. If the PROCESSOR column shows most of the chat model on CPU, something else is using GPU or RAM
+(another model, or a big app). With ~8 GB of GPU memory a 27B model only partly fits; a 14B model fits much better.
+
 **AI summaries are very slow**
 That's expected on CPU-only machines (a few minutes each). Try a smaller model (see above). Only one summary
 generates at a time; others wait in line.
@@ -321,5 +393,6 @@ bin/brakeman && bin/bundler-audit   # security scans
 npm --prefix frontend run build     # production build of the frontend (checks it compiles)
 ```
 
-Tests currently cover `Summaries::Evaluation` and `AddressSuggestions`. GitHub Actions (`.github/workflows/ci.yml`) runs Brakeman,
+Tests cover `Summaries::Evaluation`, `AddressSuggestions`, the search retriever, and the question pipeline
+(with a scripted fake model, so no Ollama needed). GitHub Actions (`.github/workflows/ci.yml`) runs Brakeman,
 bundler-audit, RuboCop and the tests on each push and pull request.
