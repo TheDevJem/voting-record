@@ -1,5 +1,5 @@
 namespace :congress do
-  desc "Sync everything: members, committees, bills, and recent votes (VOTE_LIMIT=100, BILL_MIN_CONGRESS=current)"
+  desc "Sync everything: members, committees, bills, and recent votes (VOTE_LIMIT=500, BILL_MIN_CONGRESS=current)"
   task sync: %i[members committees votes bills]
 
   desc "Sync current House and Senate members"
@@ -20,8 +20,8 @@ namespace :congress do
 
   desc "Sync the most recent House and Senate roll-call votes (VOTE_LIMIT per chamber, default 100)"
   task votes: :environment do
-    limit = ENV.fetch("VOTE_LIMIT", 500).to_i
-    Congress::HouseVotesImporter.new(limit:).call
+    limit = ENV.fetch("VOTE_LIMIT", 100).to_i
     Congress::SenateVotesImporter.new(limit:).call
+    Congress::HouseVotesImporter.new(limit:).call
   end
 end

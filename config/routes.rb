@@ -4,6 +4,7 @@ Rails.application.routes.draw do
 
   namespace :api do
     get "representatives" => "representatives#index"
+    get "address_suggestions" => "address_suggestions#index"
     resources :members, only: %i[index show] do
       resource :summary, only: %i[show create]
       member do

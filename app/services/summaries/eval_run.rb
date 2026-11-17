@@ -14,7 +14,7 @@ module Summaries
     def add(member, content:, input:, prompt_version: @meta[:prompt_version], note: nil, stats: nil)
       evaluation = Evaluation.new(content, input)
       @rows << { bioguide_id: member.bioguide_id, name: member.full_name, prompt_version:, note:,
-                 score: evaluation.score.round(3), checks: evaluation.results.map(&:to_h), content:, stats: }.compact
+                 score: evaluation.score.round(3), checks: evaluation.results.map(&:to_h), content:, input:, stats: }.compact
     end
 
     # The model's answer couldn't be used at all (bad JSON, missing fields). Scores 0 so it drags the run down.

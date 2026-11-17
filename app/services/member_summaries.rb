@@ -1,4 +1,4 @@
-# Decides when a member's summary needs (re)generating and kicks off the job.
+# Reads a member's summary and kicks off (re)generation when the user asks for it.
 module MemberSummaries
   module_function
 
@@ -7,31 +7,30 @@ module MemberSummaries
 
   def current_fingerprint(member) = fingerprint_for(Summaries::MemberPacket.new(member).fingerprint)
 
-  # Was this summary written with the current prompt?
-  def current_prompt?(summary) = summary.fingerprint.to_s.start_with?("v#{Summaries::Prompt::VERSION}:")
+  # Returns [summary_or_nil, current_fingerprint] without starting any work. Opening a profile only reads:
+  # on a CPU-only machine each summary takes minutes, so generation waits for an explicit Generate / Regenerate /
+  # Retry click. A summary written with an older prompt or older data is reported as `stale` instead.
+  def current(member)
+    summary = member.summary
+    [ summary, fingerprint_unless_busy(member, summary) ]
+  end
 
-  # Returns [summary, current_fingerprint], starting a generation job when:
-  #   - the member has never had a summary,
-  #   - `force` is set (the Regenerate / Retry buttons),
-  #   - a previous job stalled, or
-  #   - a finished summary was written with an older prompt version.
-  # Data changes alone don't trigger a refresh: on a CPU-only machine each summary takes minutes, and a data
-  # sync touches hundreds of members. Instead the API reports `stale` and the card offers Regenerate.
-  # Never starts a second job while one is running. Failed summaries wait for an explicit Retry.
-  def ensure(member, force: false)
+  # Starts a generation job (the Generate / Regenerate / Retry buttons) unless one is already running.
+  # A stalled job (e.g. the server restarted mid-generation) doesn't count as running.
+  def generate(member)
     summary = member.summary || member.create_summary!(status: "pending")
+    busy = summary.in_progress? && !summary.stalled? && !summary.previously_new_record?
 
-    brand_new = summary.previously_new_record?
-    busy = summary.in_progress? && !summary.stalled? && !brand_new
-    wanted = brand_new || force || summary.stalled? || (summary.status == "complete" && !current_prompt?(summary))
-
-    if wanted && !busy
+    unless busy
       summary.update!(status: "pending", error: nil)
       GenerateMemberSummaryJob.perform_later(member.id)
     end
-    # The fingerprint only feeds the `stale` flag, which is meaningless while a summary is being written.
-    # Skipping it here keeps the frontend's 5-second status polls from rebuilding the whole packet each time.
-    fingerprint = summary.in_progress? ? nil : current_fingerprint(member)
-    [ summary, fingerprint ]
+    [ summary, fingerprint_unless_busy(member, summary) ]
+  end
+
+  # The fingerprint only feeds the `stale` flag, which is meaningless while a summary is being written.
+  # Skipping it keeps the frontend's status refetches from rebuilding the whole packet each time.
+  def fingerprint_unless_busy(member, summary)
+    summary.nil? || summary.in_progress? ? nil : current_fingerprint(member)
   end
 end

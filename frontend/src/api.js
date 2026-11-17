@@ -18,11 +18,12 @@ const FALLBACK_MESSAGES = {
   503: "The service is temporarily unavailable. Please try again shortly.",
 };
 
-async function request(path, { method = "GET" } = {}) {
+async function request(path, { method = "GET", signal } = {}) {
   let res;
   try {
-    res = await fetch(`/api${path}`, { method, headers: { Accept: "application/json" } });
-  } catch {
+    res = await fetch(`/api${path}`, { method, signal, headers: { Accept: "application/json" } });
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
     throw new ApiError("Can't reach the server. Check your connection and try again.", { code: "network_error" });
   }
 
@@ -47,6 +48,7 @@ export const api = {
   votes: (id, page) => get(`/members/${encodeURIComponent(id)}/votes?page=${page}`),
   bills: (id, role, page) => get(`/members/${encodeURIComponent(id)}/bills?role=${role}&page=${page}`),
   representatives: (q) => get(`/representatives?q=${encodeURIComponent(q)}`),
+  addressSuggestions: (q, signal) => request(`/address_suggestions?q=${encodeURIComponent(q)}`, { signal }),
   summary: (id) => get(`/members/${encodeURIComponent(id)}/summary`),
   regenerateSummary: (id) => request(`/members/${encodeURIComponent(id)}/summary`, { method: "POST" }),
 };

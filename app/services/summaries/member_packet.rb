@@ -37,11 +37,11 @@ module Summaries
     def member_info
       seat = if member.chamber == "senate"
                "Senator from #{member.state}"
-             elsif member.district
+      elsif member.district
                "Representative for #{member.state} district #{member.district}"
-             else
+      else
                "Representative for #{member.state} (at-large or delegate seat)"
-             end
+      end
       # No term dates: only the current term's start is stored, not first election, and any year here (even
       # named "current_term_began") led the model to write "serving since 2025" for senators first elected years earlier.
       { name: member.full_name, party: member.party, seat: }
@@ -90,7 +90,10 @@ module Summaries
         missed_or_present: positions.size - cast,
         compared_with: "#{comparison_party} majority",
         agreed_with_party_majority_percent: agreements.any? ? (100.0 * agreed / agreements.size).round : nil,
-        votes_against_party_majority: breaks.first(PARTY_BREAKS).map { |p| vote_line(p, party: party_majority[p.roll_call_id]) },
+        # The percentage's denominator, named so the model doesn't call it "X% of the <roll_calls_in_data> roll calls".
+        party_agreement_vote_count: agreements.size,
+        # uniq: several amendment votes on one bill on one day can read identically and crowd out the rest.
+        votes_against_party_majority: breaks.map { |p| vote_line(p, party: party_majority[p.roll_call_id]) }.uniq.first(PARTY_BREAKS),
         recent_final_votes: positions.select { |p| p.roll_call.question.to_s =~ /passage|pass|nomination|conference report|veto/i }
                                      .first(KEY_VOTES).map { |p| vote_line(p) }
       }
@@ -98,7 +101,7 @@ module Summaries
 
     def vote_line(p, party: nil)
       rc = p.roll_call
-      what = [ rc.question, rc.legislation, rc.description&.truncate(120) ].compact.join(" — ")
+      what = [ rc.question, rc.legislation_label, rc.description&.truncate(120) ].compact.join(" — ")
       line = "#{rc.voted_at&.to_date}: #{what} → voted #{p.position}"
       line += " (#{comparison_party} majority voted #{party})" if party
       "#{line}; result: #{rc.result}"

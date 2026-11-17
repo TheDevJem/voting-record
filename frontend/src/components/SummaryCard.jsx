@@ -78,6 +78,17 @@ export default function SummaryCard({ id }) {
 
         {!summary && !error && <LinearProgress />}
 
+        {summary?.status === "none" && (
+          <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+            <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
+              No summary yet. Generating one with the local model usually takes 3–6 minutes on this computer.
+            </Typography>
+            <Button variant="contained" size="small" startIcon={<AutoAwesomeIcon />} onClick={regenerate}>
+              Generate summary
+            </Button>
+          </Stack>
+        )}
+
         {inProgress && <Progress summary={summary} now={now} hasContent={!!content} />}
 
         {summary?.status === "failed" && (

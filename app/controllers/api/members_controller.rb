@@ -47,7 +47,7 @@ module Api
       render json: paginate(scope) { |vp|
         rc = vp.roll_call
         { id: rc.id, position: vp.position, voted_at: rc.voted_at, question: rc.question, description: rc.description,
-          result: rc.result, legislation: rc.legislation, yeas: rc.yeas, nays: rc.nays, source_url: rc.source_url,
+          result: rc.result, legislation: rc.legislation_label, yeas: rc.yeas, nays: rc.nays, source_url: rc.source_url,
           congress: rc.congress, session: rc.session, number: rc.number }
       }
     end

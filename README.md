@@ -5,22 +5,33 @@ committee assignments, and the bills they've sponsored or cosponsored. Find your
 street address or state, and read an AI-generated summary of each member produced by a **local** language model.
 
 - **Backend:** Rails 8 API (`app/`), PostgreSQL
-- **Frontend:** React + Vite + MUI (`frontend/`)
+- **Frontend:** React + Vite + MUI (`frontend/`), with live updates over Action Cable
 - **AI summaries:** [Ollama](https://ollama.com) running `qwen3:14b` on your own machine (free, nothing leaves your computer)
 
 ## Features
 
-- **Find your representatives:** enter a street address (exact congressional district) or a state on the home page.
-- **Browse by chamber:** Senate or House, then a searchable member list filterable by party.
-- **Member profiles:** contact info, an AI summary, recent votes (with Yea/Nay breakdown), committee and
-  subcommittee seats, and sponsored/cosponsored bills.
+- **Find your representatives:** enter a street address (matched to the exact congressional district through the
+  Census Geocoder) or a state name or code on the home page to get your two senators and House member(s).
+  Address and state suggestions appear as you type (from [Photon](https://photon.komoot.io), OpenStreetMap data);
+  pick one to search right away, or just press Enter on what you typed.
+- **Browse by chamber:** Senate or House, then a member list you can search by name or state and filter by party.
+- **Member profiles:**
+  - Header: party, seat, photo, website, phone and office address, plus counts of synced votes, sponsored and
+    cosponsored bills, and committees.
+  - **AI summary** (on demand): click **Generate summary** to get an overview, 2–4 key issues with cited bills,
+    the member's party-agreement percentage and notable party breaks, and a note on what the data doesn't cover.
+    Progress updates live while it's being written, and the card tells you when the summary is out of date.
+  - **Votes:** Yea/Nay/Not Voting totals, then each roll call (newest first) with the question, the bill,
+    the result, the tally, and a link to the official record.
+  - **Committees:** committee and subcommittee seats with roles such as Chairman or Ranking Member.
+  - **Sponsored / Cosponsored bills:** policy area, introduction date, latest action, and a link to Congress.gov.
 
 ## Prerequisites
 
 | Tool | Version | Notes |
 |---|---|---|
-| Ruby | 3.3.5 | See `.tool-versions` (asdf). rbenv/rvm/mise work too. |
-| Node.js | 20+ (developed on 22) | For the Vite frontend |
+| Ruby | 3.4.9 | See `.tool-versions` (asdf). rbenv/rvm/mise work too. |
+| Node.js | 20+ (developed on 22.12) | For the Vite frontend |
 | PostgreSQL | 14+ (developed on 17) | Must be reachable over TCP on `localhost` |
 | Ollama | 0.6+ | Only needed for AI summaries. [Download](https://ollama.com/download) |
 | Congress.gov API key | — | Free: [sign up here](https://api.congress.gov/sign-up/). Has an hourly request limit. |
@@ -94,7 +105,9 @@ This starts three processes with foreman (`Procfile.dev`):
 Open http://localhost:5173. Press Ctrl+C to stop all three.
 
 Background jobs use a second database (`voting_record_development_queue`), created by `bin/setup` /
-`bin/rails db:prepare` along with the main one.
+`bin/rails db:prepare` along with the main one. Live summary updates use Action Cable. In development its
+`postgresql` adapter relays messages from the `jobs` process to the browser through the main database
+(LISTEN/NOTIFY), so no Redis is needed. Vite forwards the `/cable` WebSocket to Rails.
 
 ## Configuration
 
@@ -109,6 +122,8 @@ All settings come from environment variables, loaded from `.env` in development.
 | `DATABASE_PASSWORD` | (none) | Postgres password |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama server |
 | `OLLAMA_MODEL` | `qwen3:14b` | Model used for summaries (must be pulled first) |
+| `VOTE_LIMIT` | `500` (`.env.example` sets `100` for a faster first sync) | Most recent roll calls to sync per chamber |
+| `BILL_MIN_CONGRESS` | the current Congress | Oldest Congress of bills to keep |
 
 ## Data sync
 
@@ -120,12 +135,13 @@ Data is copied into Postgres so the app is fast and doesn't hit external APIs on
 | [senate.gov roll-call XML](https://www.senate.gov/legislative/votes_new.htm) | Senate votes, matched to members by state + last name | No |
 | [unitedstates/congress-legislators](https://github.com/unitedstates/congress-legislators) | Committee and subcommittee assignments (not in the Congress.gov API) | No |
 | [US Census Geocoder](https://geocoding.geo.census.gov) | Address → congressional district, looked up live when someone searches | No |
+| [Photon](https://photon.komoot.io) (komoot's public demo server) | Address/state suggestions while typing, looked up live (not synced) | No |
 
 ```bash
 bin/rails congress:sync                     # everything, in order
 bin/rails congress:members                  # run this first if running steps individually
 bin/rails congress:committees
-bin/rails congress:votes                    # VOTE_LIMIT=100: most recent roll calls per chamber
+bin/rails congress:votes                    # VOTE_LIMIT=500: most recent roll calls per chamber
 bin/rails congress:bills                    # BILL_MIN_CONGRESS=119: oldest Congress of bills to keep
 ```
 
@@ -144,16 +160,22 @@ Each member profile has an **AI summary** section between the header and the tab
 2. `Summaries::Prompt` (`app/services/summaries/prompt.rb`) holds the system prompt (use only the provided data,
    stay neutral, cite evidence) and a JSON schema the model's answer must follow.
 3. `GenerateMemberSummaryJob` sends both to Ollama in the background and saves the result in `member_summaries`.
-   The page checks every few seconds until it's ready. Jobs run in the separate `jobs` process (Solid Queue) with a
-   single thread for the `summaries` queue, since a local model generates one summary at a time. Keeping slow jobs
-   out of the web server means they can never block page loads.
+   Jobs run in the separate `jobs` process (Solid Queue) with a single thread for the `summaries` queue, since a
+   local model generates one summary at a time. Keeping slow jobs out of the web server means they can never block
+   page loads.
+4. Each status change (queued → running → complete/failed) is broadcast on `MemberSummaryChannel`, and the card
+   refetches the summary when it hears one, with an elapsed-time clock while it waits. If the WebSocket can't
+   connect, the card falls back to checking once a minute.
 
-Summaries are generated the first time a profile is opened and then reused. They regenerate automatically only
-when the prompt version changes; when a member's data changes the card says so and offers **Regenerate**. The
-exact data sent to the model is saved with each summary (`member_summaries.input`), so you can see what it was given.
+Opening a profile never starts generation. A summary is only written when someone clicks **Generate summary**
+(or **Regenerate** / **Retry**), and the result is saved and reused. When a member's data or the prompt version
+changes, the card says the summary is out of date and offers **Regenerate**. A job that hasn't finished after
+20 minutes (for example because the `jobs` process restarted) is shown as failed with a **Retry** button. Only one
+job per member runs at a time. The exact data sent to the model is saved with each summary
+(`member_summaries.input`), so you can see what it was given.
 
-**Experimenting with prompts:** edit `prompt.rb`, bump `Prompt::VERSION`, and open a profile: every summary
-regenerates with the new prompt. To try a prompt without the UI:
+**Experimenting with prompts:** edit `prompt.rb`, bump `Prompt::VERSION`, and click **Regenerate** on a
+profile to see the new prompt's output. To try a prompt without the UI:
 
 ```bash
 bin/rails runner 'puts JSON.pretty_generate(Summaries::Generator.new.call(Member.find_by!(bioguide_id: "S000148"))[:content])'
@@ -181,18 +203,20 @@ written from. Each check matches one rule in the prompt:
 
 | Check | Fails when |
 |---|---|
-| `evidence_grounded` | An evidence item isn't in the record, either word for word or as a rewording whose bill numbers, nominations and dates are all real |
+| `evidence_grounded` | An evidence item isn't in the record, either word for word or as a rewording whose bill numbers, nominations and dates are all real, pairs a real bill number with a title the record doesn't give it, or isn't a bill or vote at all (e.g. `"Health (52 bills)"`) |
 | `cited_ids_exist` | Any bill or nomination number anywhere in the summary isn't in the record |
-| `party_agreement` | `voting_pattern` gives a different percentage, or computes extra ones |
+| `party_agreement` | `voting_pattern` gives a different percentage, computes extra ones, or says it's out of a different number of votes than `party_agreement_vote_count` |
+| `party_breaks_from_record` | `voting_pattern` mentions more than two votes, a vote not in `votes_against_party_majority`, or the wrong Yea/Nay for one |
 | `neutral_language` | Labels like "progressive", "moderate" or "pro-…" appear (unless the record itself uses the word) |
-| `no_tenure_claim` | It says how long they've served ("serving since 2025"), which the record can't show |
-| `topics_from_policy_areas` | A key issue isn't one of `top_policy_areas` |
-| `evidence_on_topic` | A bill tagged `[Taxation]` is used as evidence for a different topic (strict on purpose) |
+| `no_tenure_claim` | It says when they took office or how long they've served ("serving since 2025", "current term began in 2025"), which the record can't show |
+| `topics_from_policy_areas` | A key issue isn't one of `top_policy_areas`, or is one with no tagged bills in the recent lists |
+| `evidence_on_topic` | A bill tagged `[Taxation]` in the record is used as evidence for a different topic (areas must match exactly: `[Law]` isn't "Crime and Law Enforcement"), or a bill with no policy area is used at all (strict on purpose; votes are exempt) |
 | `limitations_match_scope` | `limitations` leaves out the Congress or the roll-call count from `data_scope` |
-| `format` | Wrong number of issues or evidence items, sentence counts off, or markdown in the text |
+| `format` | Wrong number of issues (2-4, fewer only when fewer areas have tagged recent bills), duplicate topics, more than 3 evidence items, sentence counts off, or markdown in the text |
 
-These catch mistakes a program can see. They can't tell whether a sentence fairly describes a bill, so keep reading
-some summaries yourself.
+Bill numbers are recognized in citation style (`H.Res. 1247`) and in the compact style of House vote data
+(`HRES 1247`). These checks catch mistakes a program can see. They can't tell whether a sentence fairly describes
+a bill, or whether prose mentions a bill under the wrong topic, so keep reading some summaries yourself.
 
 ```bash
 bin/rails summaries:eval                                   # score summaries already saved in the app
@@ -201,8 +225,8 @@ bin/rails summaries:eval:compare                           # last 4 runs side by
 ```
 
 `generate` defaults to members that already have a saved summary, so runs line up. You can also pass
-`MEMBERS=S000033,F000479`. Each run is saved to `tmp/evals/*.json`, along with each summary's text and check
-details, so `compare` can show which change moved which check. Summaries saved before the app stored their input
+`MEMBERS=S000033,F000479`. Each run is saved to `tmp/evals/*.json`, along with each summary's text, the record it was
+written from, and check details, so `compare` can show which change moved which check. Summaries saved before the app stored their input
 are skipped, because rebuilding the record from today's data flags bills that have since dropped off the "recent"
 lists. A typical loop: run `generate`, change `prompt.rb` and bump `VERSION`, run `generate` again, then `compare`.
 Small models vary from run to run, so treat a difference of one summary as noise.
@@ -213,26 +237,32 @@ The frontend uses these JSON endpoints. Errors come back as `{ "error": { "code"
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/members?chamber=senate\|house` | Member list |
-| `GET /api/members/:bioguide_id` | Profile, committees, counts |
+| `GET /api/members?chamber=senate\|house&q=` | Member list (`q` matches name or state) |
+| `GET /api/members/:bioguide_id` | Profile, contact info, committees, counts, vote breakdown |
 | `GET /api/members/:bioguide_id/votes?page=` | Roll-call votes (20 per page) |
 | `GET /api/members/:bioguide_id/bills?role=sponsor\|cosponsor&page=` | Bills (20 per page) |
-| `GET /api/members/:bioguide_id/summary` | AI summary (`202` while generating) |
-| `POST /api/members/:bioguide_id/summary` | Regenerate the AI summary |
-| `GET /api/representatives?q=<address or state>` | Senators + House member(s) |
+| `GET /api/members/:bioguide_id/summary` | AI summary, read-only (`status: "none"` if never generated, `202` while generating) |
+| `POST /api/members/:bioguide_id/summary` | Generate or regenerate the AI summary |
+| `GET /api/address_suggestions?q=<partial address or state>` | Up to 5 `{ label, kind: "address"\|"state" }` suggestions (3+ characters; cached for a day) |
+| `GET /api/representatives?q=<address or state>` | Senators + House member(s); for an address, also the matched address and district |
+| `WS /cable` → `MemberSummaryChannel` (`member_id`) | Summary status changes (Action Cable) |
 
 ## Project layout
 
 ```
 app/controllers/api/        JSON API
+app/channels/               Action Cable channel for live summary status
 app/services/congress/      Data sync from Congress.gov, senate.gov, congress-legislators
 app/services/summaries/     AI summary: data packet, prompt + schema, Ollama client, evaluation
 app/services/district_lookup.rb   Address -> district via the Census Geocoder
+app/services/address_suggestions.rb  Address autocomplete via Photon
+app/services/member_summaries.rb  When to start a summary job
 app/jobs/                   Background summary generation
 lib/tasks/congress.rake     Sync tasks
 lib/tasks/summaries.rake    Summary evaluation tasks
 frontend/src/               React app (pages/, components/)
-Procfile.dev, bin/dev       Run Rails + Vite together
+test/                       Minitest tests (summary evaluation, address suggestions)
+Procfile.dev, bin/dev       Run Rails + Vite + jobs together
 ```
 
 ## Troubleshooting
@@ -258,7 +288,22 @@ Start Ollama (`ollama serve`) and check `curl http://localhost:11434/api/version
 
 **AI summary stays on "queued" forever**
 The `jobs` process isn't running. Start the app with `bin/dev` (not just `bin/rails server`), or run `bin/jobs`
-in another terminal.
+in another terminal. After 20 minutes the card shows it as failed with a Retry button.
+
+**`collation version mismatch` warnings, or `db:create` fails on `template1`**
+The OS updated glibc, which can change how Postgres sorts text. For each database listed (including `template1`),
+rebuild its indexes and record the new version:
+`psql -d <db> -c 'REINDEX DATABASE "<db>";' -c 'ALTER DATABASE "<db>" REFRESH COLLATION VERSION;'`
+
+**No address suggestions appear**
+They need 3+ characters and a short pause in typing. Suggestions come from Photon's free public server, which
+throttles heavy use and can be down; when it fails the box quietly works as a plain search, and the Rails log
+shows `AddressSuggestions unavailable`. Only full street addresses and states are suggested, since those are what
+the district lookup can resolve.
+
+**Address search says the lookup is unavailable**
+The Census Geocoder is down or rejecting requests (it sometimes returns a "Request Rejected" page). Searching by
+state still works.
 
 **AI summaries are very slow**
 That's expected on CPU-only machines (a few minutes each). Try a smaller model (see above). Only one summary
@@ -270,8 +315,11 @@ Stop the other process (`lsof -t -i :5173 | xargs kill`) or change the port in `
 ## Development
 
 ```bash
+bin/rails db:test:prepare test      # Minitest suite (the first part creates/updates voting_record_test)
 bin/rubocop                         # Ruby lint
+bin/brakeman && bin/bundler-audit   # security scans
 npm --prefix frontend run build     # production build of the frontend (checks it compiles)
 ```
 
-There's no automated test suite yet.
+Tests currently cover `Summaries::Evaluation` and `AddressSuggestions`. GitHub Actions (`.github/workflows/ci.yml`) runs Brakeman,
+bundler-audit, RuboCop and the tests on each push and pull request.
