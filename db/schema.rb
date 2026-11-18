@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_17_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_18_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -67,6 +67,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_000002) do
     t.index ["parent_id"], name: "index_committees_on_parent_id"
   end
 
+  create_table "conversations", force: :cascade do |t|
+    t.string "token", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["token"], name: "index_conversations_on_token", unique: true
+  end
+
   create_table "member_summaries", force: :cascade do |t|
     t.bigint "member_id", null: false
     t.string "status", default: "pending", null: false
@@ -116,6 +123,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_000002) do
     t.text "error"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.bigint "conversation_id", null: false
+    t.index ["conversation_id"], name: "index_questions_on_conversation_id"
     t.index ["token"], name: "index_questions_on_token", unique: true
   end
 
@@ -176,6 +185,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_17_000002) do
   add_foreign_key "committee_memberships", "members"
   add_foreign_key "committees", "committees", column: "parent_id"
   add_foreign_key "member_summaries", "members"
+  add_foreign_key "questions", "conversations"
   add_foreign_key "vote_positions", "members"
   add_foreign_key "vote_positions", "roll_calls"
 end

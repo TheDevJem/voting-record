@@ -1,10 +1,13 @@
 module Ask
-  # Answers one question in five stages, reporting each through the block so the page can show progress:
+  # Answers one question in five stages, reporting each through the block so the page can show progress. Earlier
+  # questions in the same conversation (history) let the planner resolve follow-ups and the writer stay on thread.
   #   planning  - the model turns the question into a search plan (topic, party, stance)
   #   searching - hybrid search finds candidate votes and/or bills (Search::Retriever)
   #   reading   - the model judges which candidates fit, and which way each vote or bill points
   #   counting  - SQL tallies the party breakdowns and member lists (Ask::Tally)
   #   writing   - the model words a short answer from those computed facts
+  # "Activity" questions ("highlights of the last 7 days") skip search and reading: Ask::Activity gathers
+  # everything in the window and the model writes a digest.
   class Pipeline
     class InvalidOutput < StandardError; end
 
@@ -20,15 +23,20 @@ module Ask
 
     def model = @client.model
 
-    KINDS = %w[votes bills both].freeze
+    KINDS = %w[votes bills both activity].freeze
+    MAX_DAYS = 90
 
+    # history: earlier answered questions in the conversation, oldest first: [{ question:, plan:, answer: }].
     # Returns { plan:, result:, answer:, stats: }. result: { kind:, votes: [...]?, bills: [...]?, bill_member_count:?,
-    # role:?, rejected: [{ kind:, text:, reason: }] }.
-    def call(question, &progress)
+    # role:?, rejected: [{ kind:, text:, reason: }] }, or for activity { kind: "activity", activity: {...} }.
+    def call(question, history: [], &progress)
       progress ||= ->(_stage) { }
+      @history = history
 
       progress.call("planning")
       plan = plan(question)
+      return activity(question, plan, progress) if plan["kind"] == "activity"
+
       want_votes = plan["kind"] != "bills"
       want_bills = plan["kind"] != "votes"
 
@@ -57,9 +65,43 @@ module Ask
 
     private
 
+    def activity(question, plan, progress)
+      progress.call("counting")
+      activity = Activity.call(days: plan["days"], chamber: plan["chamber_filter"], party: plan["party_filter"])
+      progress.call("writing")
+      answer = ask(:write, Prompts::WRITE_ACTIVITY_SYSTEM,
+                   "#{conversation}Question: #{question}\n\nFacts:\n#{JSON.pretty_generate(Activity.facts(activity))}",
+                   Prompts::WRITE_SCHEMA)["answer"].to_s.strip
+      { plan:, result: { kind: "activity", activity: }, answer:, stats: @stats }
+    end
+
+    PLAN_KEYS = %w[kind search keywords party chamber stance role days].freeze # as the planner wrote them
+
+    # Earlier turns for the planner, including their plans so a follow-up can carry the topic over.
+    def plan_history
+      return "" if @history.blank?
+
+      turns = @history.map do |h|
+        plan = (h[:plan] || {}).slice(*PLAN_KEYS).compact_blank
+        "Q: #{h[:question]}\nPlan used: #{plan.to_json}\nA: #{h[:answer].to_s.truncate(400)}"
+      end
+      "Earlier in this conversation (oldest first):\n#{turns.join("\n\n")}\n\nNew question: "
+    end
+
+    # Earlier turns for the writer, so a follow-up reads as one.
+    def conversation
+      return "" if @history.blank?
+
+      "Earlier in this conversation (oldest first):\n" \
+        "#{@history.map { "Q: #{_1[:question]}\nA: #{_1[:answer].to_s.truncate(600)}" }.join("\n\n")}\n\nNew "
+    end
+
     def plan(question)
-      plan = ask(:plan, Prompts::PLAN_SYSTEM, "Question: #{question}", Prompts::PLAN_SCHEMA)
+      plan = ask(:plan, Prompts::PLAN_SYSTEM, "#{plan_history.presence || 'Question: '}#{question}", Prompts::PLAN_SCHEMA)
       plan["kind"] = "votes" unless KINDS.include?(plan["kind"])
+      # Seen in testing: an activity follow-up planned as a topic search for "recent activity", which matches nothing.
+      plan["kind"] = "activity" if plan["search"].to_s.match?(/\A\s*recent activity\s*\z/i) && plan["stance"].blank?
+      plan["days"] = plan["days"].to_i.positive? ? [ plan["days"].to_i, MAX_DAYS ].min : 7
       plan["search"] = plan["search"].to_s.strip.presence || question
       plan["keywords"] = Array(plan["keywords"]).map(&:to_s).first(6)
       plan["party_filter"] = plan["party"] if Member.where(party: plan["party"]).exists?
@@ -119,7 +161,7 @@ module Ask
     end
 
     def write(question, plan, result)
-      answer = ask(:write, Prompts::WRITE_SYSTEM, "Question: #{question}\n\nFacts:\n#{JSON.pretty_generate(facts(plan, result))}",
+      answer = ask(:write, Prompts::WRITE_SYSTEM, "#{conversation}Question: #{question}\n\nFacts:\n#{JSON.pretty_generate(facts(plan, result))}",
                    Prompts::WRITE_SCHEMA)["answer"].to_s.strip
       without_missing_names_claim(answer)
     end

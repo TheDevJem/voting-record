@@ -10,7 +10,8 @@ class Ask::PipelineTest < ActiveSupport::TestCase
 
     def chat(system:, user:, format:)
       step = { Ask::Prompts::PLAN_SYSTEM => :plan, Ask::Prompts::READ_VOTES_SYSTEM => :read_votes,
-               Ask::Prompts::READ_BILLS_SYSTEM => :read_bills, Ask::Prompts::WRITE_SYSTEM => :write }.fetch(system)
+               Ask::Prompts::READ_BILLS_SYSTEM => :read_bills, Ask::Prompts::WRITE_SYSTEM => :write,
+               Ask::Prompts::WRITE_ACTIVITY_SYSTEM => :write_activity }.fetch(system)
       @calls << [ step, user ]
       { content: @replies.fetch(step).to_json, stats: { total_seconds: 1.0 } }
     end
@@ -41,7 +42,7 @@ class Ask::PipelineTest < ActiveSupport::TestCase
 
   def replies(**overrides)
     { plan: { kind: "votes", search: "military aid to Israel", keywords: [ "Israel" ], party: "Democratic", chamber: "any",
-              stance: "supported funding for Israel", role: "either" },
+              stance: "supported funding for Israel", role: "either", days: 7 },
       read_votes: { votes: [ { ref: "V1", relevant: true, yea_supports_stance: "no", reason: "Disapproval of an arms sale; Nay keeps the sale." },
                              { ref: "V2", relevant: false, yea_supports_stance: "unclear", reason: "An unrelated nomination." } ] },
       write: { answer: "One Democrat voted to keep the sale." } }.merge(overrides)
@@ -127,5 +128,48 @@ class Ask::PipelineTest < ActiveSupport::TestCase
     assert_equal 1, facts["distinct_members_matching_by_votes"]
     assert_equal 1, facts["distinct_members_matching_by_bills"]
     assert_equal 2, facts["distinct_members_on_both_sides"]
+  end
+
+  test "a follow-up is planned and written with the earlier questions in view" do
+    history = [ { question: "How many Democrats voted to fund Israel?", answer: "Twenty Democrats voted Nay.",
+                  plan: { "kind" => "votes", "search" => "military aid to Israel", "party" => "Democratic", "stance" => "supported funding for Israel" } } ]
+    client = FakeClient.new(replies(plan: replies[:plan].merge(party: "Republican")))
+    Ask::Pipeline.new(client:, retriever: FakeRetriever.new(@docs)).call("What about Republicans?", history:)
+
+    plan_prompt = client.calls.first.last
+    assert_match "Q: How many Democrats voted to fund Israel?", plan_prompt
+    assert_match '"search":"military aid to Israel"', plan_prompt
+    assert_match(/New question: What about Republicans\?\z/, plan_prompt)
+    assert_match "A: Twenty Democrats voted Nay.", client.calls.last.last
+  end
+
+  test "an activity question skips search and reading and writes a digest from everything in the window" do
+    travel_to Time.zone.parse("2026-04-22 12:00") do
+      bill = Bill.create!(congress: 119, bill_type: "S", number: "30", title: "Clean Water Act", introduced_date: Date.new(2026, 4, 20))
+      BillSponsorship.create!(bill:, member: @dem, role: "sponsor")
+      plan = replies[:plan].merge(kind: "activity", search: "recent activity", party: "any", stance: "", days: 400)
+      client = FakeClient.new(replies(plan:, write_activity: { answer: "The Senate confirmed Jo Smith." }))
+      retriever = FakeRetriever.new(@docs)
+      stages = []
+      out = Ask::Pipeline.new(client:, retriever:).call("Give me the highlights of the last 7 days") { stages << _1 }
+
+      assert_equal %w[planning counting writing], stages
+      assert_nil retriever.args # no search
+      assert_equal 90, out[:plan]["days"] # clamped
+      assert_equal "activity", out[:result][:kind]
+      assert_equal %i[plan write_activity], client.calls.map(&:first)
+      facts = client.calls.last.last
+      assert_match "S. 30 (2026-04-20), sponsor Dana Dem (D-OH)", facts
+      assert_match "Senate · S.J.Res. 138", facts
+      assert_equal "The Senate confirmed Jo Smith.", out[:answer]
+    end
+  end
+
+  test "a plan searching for 'recent activity' is treated as an activity question" do
+    plan = replies[:plan].merge(kind: "bills", search: "recent activity", party: "Democratic", stance: "")
+    client = FakeClient.new(replies(plan:, write_activity: { answer: "Democrats introduced one bill." }))
+    out = Ask::Pipeline.new(client:, retriever: FakeRetriever.new(@docs)).call("What did Democrats introduce?")
+    assert_equal "activity", out[:result][:kind]
+    assert_equal "Democratic", out[:result][:activity][:window][:party]
   end
 end

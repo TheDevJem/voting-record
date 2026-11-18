@@ -51,7 +51,8 @@ export const api = {
   representatives: (q) => get(`/representatives?q=${encodeURIComponent(q)}`),
   addressSuggestions: (q, signal) => request(`/address_suggestions?q=${encodeURIComponent(q)}`, { signal }),
   summary: (id) => get(`/members/${encodeURIComponent(id)}/summary`),
-  askQuestion: (q) => request("/questions", { method: "POST", json: { q } }),
+  askQuestion: (q, conversation) => request("/questions", { method: "POST", json: { q, conversation } }),
   question: (token) => get(`/questions/${encodeURIComponent(token)}`),
+  conversation: (token) => get(`/conversations/${encodeURIComponent(token)}`),
   regenerateSummary: (id) => request(`/members/${encodeURIComponent(id)}/summary`, { method: "POST" }),
 };

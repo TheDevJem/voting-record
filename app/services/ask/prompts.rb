@@ -1,12 +1,15 @@
 module Ask
-  # Instructions and output shapes for the three model steps of a question. The model never counts: it plans the
+  # Instructions and output shapes for the model steps of a question. The model never counts: it plans the
   # search, judges which retrieved votes/bills fit and which way a vote points, and words the answer. Ruby does
   # the counting (Ask::Tally).
   module Prompts
-    VERSION = 6
+    VERSION = 7
 
     DATA_SCOPE = "The app has the current members of Congress, the most recent ~500 roll-call votes per chamber in " \
                  "the 119th Congress, and the bills current members sponsored or cosponsored in the 119th Congress."
+
+    FOLLOW_UP_RULE = "- If earlier questions in the conversation are shown, the new one may be a follow-up: answer what " \
+                     "it asks in that light, without repeating earlier answers. The facts are only for the new question."
 
     PLAN_SYSTEM = <<~TEXT.freeze
       You turn a question about the U.S. Congress into a search plan. #{DATA_SCOPE}
@@ -24,20 +27,34 @@ module Ask
       - stance: the position being asked about in plain words, e.g. "supported funding for Israel", "support
         Israel" or "opposed abortion bans". Empty if the question just asks how people voted or who sponsored what.
       - role: for bill questions, "sponsor", "cosponsor", or "either".
+      - kind "activity" instead, for questions about what happened recently with no single topic ("Give me the
+        highlights of the last 7 days", "What did the House do this week?", "What's new in Congress?"): the app
+        then lists every vote, new bill and bill that moved in that window. Use party and chamber if the question
+        names them; leave search as "recent activity", keywords empty and stance empty.
+      - days: for "activity", how many days back the question covers: "this week" or "last 7 days" = 7, "today" =
+        1, "this month" = 30, unspecified = 7. Any number from 1 to 90. For other kinds use 7.
+
+      Follow-ups: if earlier questions in the conversation are shown, the new question may lean on them ("What about
+      Republicans?", "And in the House?", "Which of those passed?", "List them", "What about last month?"). Carry
+      over the earlier plan's kind, topic, keywords, stance, filters and days, changing only what the new question
+      changes. After an "activity" question, a follow-up about who did what in that period ("What did Democrats
+      introduce?", "What passed?", "Just the Senate?") stays "activity" with the new party or chamber. A question
+      on a new topic gets a fresh plan.
     TEXT
 
     PLAN_SCHEMA = {
       type: "object",
       properties: {
-        kind: { type: "string", enum: %w[votes bills both] },
+        kind: { type: "string", enum: %w[votes bills both activity] },
         search: { type: "string" },
         keywords: { type: "array", items: { type: "string" }, maxItems: 6 },
         party: { type: "string", enum: %w[any Democratic Republican Independent] },
         chamber: { type: "string", enum: %w[any senate house] },
         stance: { type: "string" },
-        role: { type: "string", enum: %w[either sponsor cosponsor] }
+        role: { type: "string", enum: %w[either sponsor cosponsor] },
+        days: { type: "integer", minimum: 1, maximum: 90 }
       },
-      required: %w[kind search keywords party chamber stance role]
+      required: %w[kind search keywords party chamber stance role days]
     }.freeze
 
     READ_VOTES_SYSTEM = <<~TEXT.freeze
@@ -121,6 +138,27 @@ module Ask
         Israel") rather than repeating the question's wording, and say which position was counted and why.
       - If nothing relevant was found, say so plainly and mention that the app only covers the data above.
       - Describe, don't judge: no labels like "extreme" or "moderate".
+      #{FOLLOW_UP_RULE}
+    TEXT
+
+    WRITE_ACTIVITY_SYSTEM = <<~TEXT.freeze
+      You write a short digest of recent activity in the U.S. Congress for a civic-information website, using only
+      the facts you are given: every roll-call vote in the window (grouped by the measure voted on), bills introduced
+      in it, and older bills that moved forward in it. #{DATA_SCOPE} Bill actions only show each bill's latest step.
+
+      - Plain text, no markdown or bullet points: 2-4 short paragraphs separated by a blank line, about 120-220
+        words in all. The page lists every vote and bill under your answer, so pick the highlights.
+      - Lead with what mattered most: bills that passed or were sent to the President, final votes on passage and
+        confirmations, and close or party-line votes. Group related votes (a nomination's cloture and confirmation
+        votes are one story). Then the new bills: how many, by which party, the main policy areas, and two or three
+        of the most-cosponsored with their sponsors. Mention the most active sponsor if one stands out.
+      - Say who did what: name sponsors as given (e.g. "Don Bacon (R-NE)"), say how each party voted and how many
+        members broke with their party, and name them only when the facts list them.
+      - Use only the numbers and dates in the facts, exactly as given; never add counts up yourself. Refer to votes
+        by what they were on (e.g. "the Senate confirmed Daniel Domenico to the Tenth Circuit, 51-46").
+      - If a window has no votes, or the data ends before the window does (data_through), say so plainly.
+      - Describe, don't judge: no labels like "extreme", "controversial" or "moderate".
+      #{FOLLOW_UP_RULE}
     TEXT
 
     WRITE_SCHEMA = { type: "object", properties: { answer: { type: "string" } }, required: %w[answer] }.freeze

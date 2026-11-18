@@ -3,6 +3,7 @@ import {
   Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Card, CardContent, Checkbox, Chip, Divider,
   LinearProgress, Link, Stack, Step, StepLabel, Stepper, TextField, Typography,
 } from "@mui/material";
+import AddCommentIcon from "@mui/icons-material/AddComment";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
@@ -11,8 +12,8 @@ import { consumer } from "../cable.js";
 import { partyColor } from "../party.js";
 
 const EXAMPLES = [
+  "Give me the highlights of the last 7 days",
   "How many Democrats support Israel?",
-  "How many Democrats voted to fund Israel? List them.",
   "Which Republicans voted against abortion bans?",
   "Which senators cosponsored bills on Social Security?",
 ];
@@ -28,33 +29,35 @@ const STAGES = [
 // Status changes arrive over Action Cable; this slow poll only covers a WebSocket that can't connect.
 const FALLBACK_POLL_MS = 60000;
 
-// Loads a question by token and keeps it fresh while it's being answered.
-function useQuestion(token) {
-  const [question, setQuestion] = useState(null);
+const inProgress = (q) => q.status === "pending" || q.status === "running";
+
+// Loads a conversation by token and keeps it fresh while one of its questions is being answered.
+function useConversation(token) {
+  const [conversation, setConversation] = useState(null);
   const [error, setError] = useState(null);
+  const [version, setVersion] = useState(0);
   const timer = useRef(null);
 
   useEffect(() => {
     if (!token) {
-      setQuestion(null);
+      setConversation(null);
       return undefined;
     }
     let live = true;
     const load = () => {
       clearTimeout(timer.current);
-      api.question(token)
-        .then((q) => {
+      api.conversation(token)
+        .then((c) => {
           if (!live) return;
-          setQuestion(q);
+          setConversation(c);
           setError(null);
-          if (q.status === "pending" || q.status === "running") timer.current = setTimeout(load, FALLBACK_POLL_MS);
+          if (c.questions.some(inProgress)) timer.current = setTimeout(load, FALLBACK_POLL_MS);
         })
         .catch((err) => live && setError(err));
     };
-    setQuestion(null);
     load();
     const subscription = consumer.subscriptions.create(
-      { channel: "QuestionChannel", token },
+      { channel: "ConversationChannel", token },
       { connected: load, received: load },
     );
     return () => {
@@ -62,33 +65,50 @@ function useQuestion(token) {
       subscription.unsubscribe();
       clearTimeout(timer.current);
     };
-  }, [token]);
+  }, [token, version]);
 
-  return { question, error };
+  useEffect(() => { setConversation(null); }, [token]);
+
+  return { conversation, error, reload: () => setVersion((v) => v + 1) };
 }
 
-// "Ask about votes and bills": a local model plans the search and reads the matches; the counts come from SQL.
+// "Ask about votes and bills": a conversation with a local model. It plans each search (using earlier questions
+// for follow-ups) and reads the matches; the counts come from SQL.
 export default function AskBox() {
   const [params, setParams] = useSearchParams();
-  const token = params.get("question");
+  const token = params.get("conversation");
+  const legacyQuestion = params.get("question"); // links from before conversations existed
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
-  const { question, error } = useQuestion(token);
+  const { conversation, error, reload } = useConversation(token);
+  const endRef = useRef(null);
 
   useEffect(() => {
-    if (question?.text) setText(question.text);
-  }, [question?.text]);
+    if (!legacyQuestion) return;
+    api.question(legacyQuestion).then((q) => setParams((p) => {
+      p.delete("question");
+      p.set("conversation", q.conversation);
+      return p;
+    }, { replace: true })).catch(setSubmitError);
+  }, [legacyQuestion, setParams]);
+
+  const questions = conversation?.questions || [];
+  const count = questions.length;
+  useEffect(() => {
+    if (count > 1) endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [count]);
 
   const ask = async (q = text) => {
     const trimmed = q.trim();
     if (!trimmed) return;
-    setText(trimmed);
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const created = await api.askQuestion(trimmed);
-      setParams((p) => { p.set("question", created.token); return p; });
+      const created = await api.askQuestion(trimmed, token || undefined);
+      setText("");
+      if (created.conversation === token) reload();
+      else setParams((p) => { p.set("conversation", created.conversation); return p; });
     } catch (err) {
       setSubmitError(err);
     } finally {
@@ -96,56 +116,91 @@ export default function AskBox() {
     }
   };
 
-  const busy = submitting || question?.status === "pending" || question?.status === "running";
+  const startOver = () => {
+    setText("");
+    setSubmitError(null);
+    setParams((p) => { p.delete("conversation"); return p; });
+  };
+
+  const busy = submitting || questions.some(inProgress);
+  const lastComplete = questions.findLast((q) => q.status === "complete")?.token;
 
   return (
     <Card variant="outlined" sx={{ mb: 5 }}>
       <CardContent>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
           <AutoAwesomeIcon color="primary" />
-          <Typography variant="h5">Ask about votes and bills</Typography>
+          <Typography variant="h5" sx={{ flex: 1 }}>Ask about votes and bills</Typography>
+          {token && <Button size="small" startIcon={<AddCommentIcon />} onClick={startOver} disabled={submitting}>New conversation</Button>}
         </Stack>
-        <Typography color="text.secondary" sx={{ mb: 2 }}>
-          Ask how members voted or what they sponsored. A local AI model finds the matching votes or bills and
-          decides which way each vote points; the counts come straight from the data. Takes a minute or two.
-        </Typography>
+        {!token && (
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            Ask how members voted, what they sponsored, or what happened lately, then ask follow-ups. A local AI
+            model finds the matching votes or bills and decides which way each vote points; the counts come straight
+            from the data. Takes a minute or two.
+          </Typography>
+        )}
 
-        <Box component="form" onSubmit={(e) => { e.preventDefault(); ask(); }} sx={{ display: "flex", gap: 1.5, flexWrap: "wrap" }}>
+        {questions.map((q) => (
+          <Turn key={q.token} question={q} detailsOpen={q.token === lastComplete} onRetry={() => ask(q.text)} retryDisabled={busy} />
+        ))}
+        <div ref={endRef} />
+
+        <Box component="form" onSubmit={(e) => { e.preventDefault(); ask(); }}
+          sx={{ display: "flex", gap: 1.5, flexWrap: "wrap", mt: count ? 3 : 0 }}>
           <TextField
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="e.g. How many Democrats voted to fund Israel?"
+            placeholder={count ? "Ask a follow-up, e.g. What about Republicans?" : "e.g. Give me the highlights of the last 7 days"}
             size="small"
             sx={{ flex: "1 1 360px" }}
-            slotProps={{ htmlInput: { maxLength: 500, "aria-label": "Question" } }}
+            slotProps={{ htmlInput: { maxLength: 500, "aria-label": count ? "Follow-up question" : "Question" } }}
           />
-          <Button type="submit" variant="contained" disabled={!text.trim() || busy}>Ask</Button>
+          <Button type="submit" variant="contained" disabled={!text.trim() || busy}>{count ? "Ask follow-up" : "Ask"}</Button>
         </Box>
-        <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1, mt: 1.5 }}>
-          {EXAMPLES.map((ex) => (
-            <Chip key={ex} label={ex} size="small" variant="outlined" disabled={busy} onClick={() => ask(ex)} />
-          ))}
-        </Stack>
+        {busy && count > 0 && (
+          <Typography variant="caption" color="text.secondary">You can ask a follow-up once this answer is ready.</Typography>
+        )}
+        {!token && (
+          <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1, mt: 1.5 }}>
+            {EXAMPLES.map((ex) => (
+              <Chip key={ex} label={ex} size="small" variant="outlined" disabled={busy} onClick={() => ask(ex)} />
+            ))}
+          </Stack>
+        )}
 
         {(submitError || error) && (
           <Alert severity="error" sx={{ mt: 2 }}>{(submitError || error).message}</Alert>
         )}
-        {question && <QuestionView question={question} onRetry={() => ask(question.text)} />}
       </CardContent>
     </Card>
   );
 }
 
-function QuestionView({ question: q, onRetry }) {
-  if (q.status === "pending" || q.status === "running") return <Progress question={q} />;
+// One question and its answer. Only the latest answer shows its votes and bills open; earlier ones fold away.
+function Turn({ question: q, detailsOpen, onRetry, retryDisabled }) {
+  return (
+    <Box sx={{ mb: 3 }}>
+      <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 1 }}>
+        <Typography sx={{ px: 2, py: 1, borderRadius: 2, bgcolor: "primary.main", color: "primary.contrastText", maxWidth: "85%" }}>
+          {q.text}
+        </Typography>
+      </Box>
+      <QuestionView question={q} detailsOpen={detailsOpen} onRetry={onRetry} retryDisabled={retryDisabled} />
+    </Box>
+  );
+}
+
+function QuestionView({ question: q, detailsOpen, onRetry, retryDisabled }) {
+  if (inProgress(q)) return <Progress question={q} />;
   if (q.status === "failed") {
     return (
-      <Alert severity="warning" sx={{ mt: 2 }} action={<Button color="inherit" size="small" onClick={onRetry}>Ask again</Button>}>
+      <Alert severity="warning" action={<Button color="inherit" size="small" disabled={retryDisabled} onClick={onRetry}>Ask again</Button>}>
         {q.error || "Couldn't answer that question."}
       </Alert>
     );
   }
-  return <Answer key={q.token} question={q} />; // key: a new question resets the ticked votes
+  return <Answer question={q} detailsOpen={detailsOpen} />;
 }
 
 function Progress({ question: q }) {
@@ -158,7 +213,7 @@ function Progress({ question: q }) {
   const active = q.status === "pending" ? -1 : STAGES.findIndex(([key]) => key === q.stage);
 
   return (
-    <Box sx={{ mt: 3 }}>
+    <Box sx={{ mt: 1 }}>
       <LinearProgress sx={{ mb: 2 }} />
       <Stepper activeStep={active} alternativeLabel sx={{ mb: 1 }}>
         {STAGES.map(([key, label]) => <Step key={key}><StepLabel>{label}</StepLabel></Step>)}
@@ -171,7 +226,33 @@ function Progress({ question: q }) {
   );
 }
 
-function Answer({ question: q }) {
+function Answer({ question: q, detailsOpen }) {
+  const [open, setOpen] = useState(detailsOpen);
+  useEffect(() => setOpen(detailsOpen), [detailsOpen]);
+  const result = q.result || {};
+  const isActivity = result.kind === "activity";
+
+  return (
+    <Box>
+      <Typography sx={{ mb: 1, whiteSpace: "pre-line" }}>{q.answer}</Typography>
+      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 1 }}>
+        Written by <strong>{q.model}</strong> running locally, from the {isActivity ? "activity" : "votes and bills"} below.
+        AI answers can contain mistakes; check what it used{isActivity ? "" : " and how it read each one"}.
+      </Typography>
+      <Accordion expanded={open} onChange={(_, o) => setOpen(o)} disableGutters elevation={0}
+        sx={{ bgcolor: "transparent", "&:before": { display: "none" } }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 0, minHeight: 0 }}>
+          <Typography variant="body2" fontWeight={600}>{open ? "Hide" : "Show"} what this answer is based on</Typography>
+        </AccordionSummary>
+        <AccordionDetails sx={{ px: 0 }}>
+          {isActivity ? <ActivityDetails question={q} /> : <SearchDetails question={q} />}
+        </AccordionDetails>
+      </Accordion>
+    </Box>
+  );
+}
+
+function SearchDetails({ question: q }) {
   const plan = q.plan || {};
   const result = q.result || {};
   const votes = result.votes || [];
@@ -182,13 +263,7 @@ function Answer({ question: q }) {
   const showBills = result.bills !== undefined || result.items !== undefined;
 
   return (
-    <Box sx={{ mt: 3 }}>
-      <Typography sx={{ mb: 1 }}>{q.answer}</Typography>
-      <Typography variant="caption" color="text.secondary" component="p" sx={{ mb: 2 }}>
-        Written by <strong>{q.model}</strong> running locally, from the votes and bills below. AI answers can contain
-        mistakes; check what it used and how it read each one.
-      </Typography>
-
+    <Box>
       <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1, mb: 2 }}>
         <Chip size="small" label={`Searched for: ${plan.search}`} />
         <Chip size="small" label={`Looked at: ${{ votes: "votes", bills: "bills", both: "votes and bills" }[result.kind] || result.kind}`} />
@@ -216,6 +291,98 @@ function Answer({ question: q }) {
         </Section>
       )}
       {result.rejected?.length > 0 && <Rejected items={result.rejected} />}
+    </Box>
+  );
+}
+
+// Everything in the window, straight from the data: votes by measure, new bills, and older bills that moved.
+function ActivityDetails({ question: q }) {
+  const { window: w, data_through: through, votes, introduced, advanced } = q.result.activity;
+  const chamberName = (c) => (c === "senate" ? "Senate" : "House");
+  return (
+    <Box>
+      <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1, mb: 2 }}>
+        <Chip size="small" label={`${w.from} to ${w.to} (last ${w.days} days)`} />
+        {w.chamber && <Chip size="small" label={`Chamber: ${w.chamber}`} />}
+        {w.party && <Chip size="small" label={`Party: ${w.party}`} />}
+        {through?.latest_vote && <Chip size="small" variant="outlined" label={`Votes synced through ${through.latest_vote}`} />}
+      </Stack>
+
+      <Section title={`Roll-call votes (${votes.total_roll_calls} on ${votes.measures} measures)`}
+        empty={votes.total_roll_calls === 0 && "No roll-call votes in this window."}>
+        {votes.measures_shown < votes.measures && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Showing the {votes.measures_shown} most recent.</Typography>
+        )}
+        {votes.items.map((g) => (
+          <Card key={g.votes[0].roll_call_id} variant="outlined" sx={{ mb: 1.5 }}>
+            <CardContent sx={{ pb: "12px !important" }}>
+              <Typography variant="body2" color="text.secondary">
+                {chamberName(g.chamber)}
+                {g.legislation && <> · {g.bill_url ? <Link href={g.bill_url} target="_blank" rel="noreferrer">{g.legislation}</Link> : g.legislation}</>}
+                {g.policy_area && <> · {g.policy_area}</>}
+              </Typography>
+              <Typography fontWeight={600}>{g.amendment || g.title || "Not described in the data"}</Typography>
+              {g.votes.map((v) => (
+                <Box key={v.roll_call_id} sx={{ mt: 1 }}>
+                  <Typography variant="body2">
+                    {v.date} · {v.question}: <strong>{v.result}</strong> ({v.yeas}–{v.nays}) · {v.pattern}
+                    {v.source_url && <> · <Link href={v.source_url} target="_blank" rel="noreferrer">Record</Link></>}
+                  </Typography>
+                  <Breakdown breakdown={v.breakdown} />
+                  {v.members_who_broke_with_party.length > 0 && (
+                    <Accordion disableGutters elevation={0} sx={{ bgcolor: "transparent", "&:before": { display: "none" } }}>
+                      <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 0, minHeight: 0 }}>
+                        <Typography variant="body2">{v.members_who_broke_with_party.length}{w.party ? ` ${w.party}` : ""} broke with their party</Typography>
+                      </AccordionSummary>
+                      <AccordionDetails sx={{ px: 0 }}>
+                        <MemberChips members={v.members_who_broke_with_party} suffix={(m) => ` · ${m.position}`} />
+                      </AccordionDetails>
+                    </Accordion>
+                  )}
+                </Box>
+              ))}
+            </CardContent>
+          </Card>
+        ))}
+      </Section>
+
+      <Section title={`Bills introduced (${introduced.total})`} empty={introduced.total === 0 && "No new bills from current members in this window."}>
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          By sponsor's party: {Object.entries(introduced.by_sponsor_party).map(([p, n]) => `${n} ${p}`).join(", ")}
+          {Object.keys(introduced.top_policy_areas).length > 0 && (
+            <> · Top areas: {Object.entries(introduced.top_policy_areas).map(([a, n]) => `${a} (${n})`).join(", ")}</>
+          )}
+        </Typography>
+        <Typography variant="caption" fontWeight={700}>Most bills introduced</Typography>
+        <MemberChips members={introduced.most_active_sponsors} suffix={(m) => ` · ${m.bills_introduced}`} />
+        <Typography variant="caption" fontWeight={700} component="p" sx={{ mt: 1.5, mb: 0.5 }}>Most cosponsored</Typography>
+        {introduced.most_cosponsored.map((b) => (
+          <ActivityBill key={b.bill_id} bill={b}
+            detail={`${b.introduced_date} · ${b.cosponsors} cosponsor${b.cosponsors === 1 ? "" : "s"}${Object.keys(b.cosponsor_parties).length ? ` (${Object.entries(b.cosponsor_parties).map(([p, n]) => `${n} ${p}`).join(", ")})` : ""}`} />
+        ))}
+      </Section>
+
+      <Section title={`Older bills that moved forward (${advanced.total})`} empty={advanced.total === 0 && "No older bills moved past committee referral in this window."}>
+        <Typography variant="body2" sx={{ mb: 1 }}>
+          {Object.entries(advanced.by_step).map(([step, n]) => `${n} ${step}`).join(" · ")}. Only each bill's latest action is synced.
+        </Typography>
+        {advanced.items.map((b) => (
+          <ActivityBill key={b.bill_id} bill={b} detail={`${b.latest_action_date} · ${b.latest_action}`} />
+        ))}
+      </Section>
+    </Box>
+  );
+}
+
+function ActivityBill({ bill: b, detail }) {
+  return (
+    <Box sx={{ mb: 1.5 }}>
+      <Typography variant="body2">
+        {b.url ? <Link href={b.url} target="_blank" rel="noreferrer">{b.label}</Link> : b.label}
+        {b.policy_area && <> · {b.policy_area}</>} · <strong>{b.title}</strong>
+      </Typography>
+      <Typography variant="caption" color="text.secondary" component="p">{detail}</Typography>
+      {b.sponsor && <MemberChips members={[b.sponsor]} suffix={() => " (sponsor)"} />}
     </Box>
   );
 }

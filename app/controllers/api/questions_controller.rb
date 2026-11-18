@@ -1,8 +1,9 @@
 module Api
-  # POST /api/questions        { q: "How many Democrats voted to fund Israel?" } -> 202, answered in the background
+  # POST /api/questions        { q: "How many Democrats voted to fund Israel?", conversation: token? } -> 202,
+  #                            answered in the background; without a conversation token a new conversation starts
   # GET  /api/questions/:token -> the question's status, stage, answer and the votes/bills it was based on
   class QuestionsController < ApplicationController
-    wrap_parameters false # the body is just { q: }; don't also nest it under "question"
+    wrap_parameters false # the body is just { q:, conversation: }; don't also nest it under "question"
 
     def create
       text = params.require(:q).to_s.squish
@@ -13,27 +14,20 @@ module Api
                             "The question box needs a search index. Run bin/rails search:index (see the README).")
       end
 
-      question = Question.create!(text:)
+      conversation = params[:conversation].present? ? Conversation.find_by!(token: params[:conversation].to_s) : Conversation.new
+      # A follow-up is planned from the answers before it, so it has to wait for the current one.
+      if conversation.persisted? && conversation.busy?
+        return render_error(:conflict, "question_in_progress", "Wait for the current answer before asking a follow-up.")
+      end
+
+      question = conversation.questions.build(text:)
+      conversation.save!
       AnswerQuestionJob.perform_later(question.id)
-      render status: :accepted, json: payload(question)
+      render status: :accepted, json: QuestionPayload.call(question)
     end
 
     def show
-      render json: payload(Question.find_by!(token: params[:id]))
-    end
-
-    private
-
-    def payload(q)
-      stalled = q.stalled?
-      {
-        token: q.token, text: q.text, created_at: q.created_at,
-        status: stalled ? "failed" : q.status, stage: stalled ? nil : q.stage,
-        error: stalled ? "Answering stopped responding (the jobs process may have restarted). Ask again." : q.error,
-        started_at: q.in_progress? ? q.created_at : nil,
-        plan: q.plan&.slice("kind", "search", "keywords", "party_filter", "chamber_filter", "stance", "role_filter"),
-        answer: q.answer, result: q.result, model: q.model, stats: q.stats
-      }
+      render json: QuestionPayload.call(Question.includes(:conversation).find_by!(token: params[:id]))
     end
   end
 end

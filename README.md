@@ -15,8 +15,9 @@ street address or state, and read an AI-generated summary of each member produce
   Address and state suggestions appear as you type (from [Photon](https://photon.komoot.io), OpenStreetMap data);
   pick one to search right away, or just press Enter on what you typed.
 - **Ask about votes and bills (experimental):** type a question like "How many Democrats support Israel?",
-  "How many Democrats voted to fund Israel?" or "Which senators cosponsored bills on Social Security?". General
-  questions draw on both votes and sponsored bills. A local model finds the matching votes and bills and decides
+  "How many Democrats voted to fund Israel?", "Which senators cosponsored bills on Social Security?" or "Give me
+  the highlights of the last 7 days", then ask follow-ups ("What about Republicans?"). General questions draw on
+  both votes and sponsored bills. A local model finds the matching votes and bills and decides
   which way each one points; the counts and member lists come straight from the database. The page shows
   every vote or bill it used, how it read each vote, and the party breakdown, and you can untick any to update
   the totals. See [Asking questions](#asking-questions).
@@ -209,7 +210,7 @@ bin/rails runner 'puts JSON.pretty_generate(Summaries::Generator.new.call(Member
 
 ## Asking questions
 
-The **Ask about votes and bills** box on the home page answers questions in five stages, shown live on the page
+The **Ask about votes and bills** box on the home page answers topic questions in five stages, shown live on the page
 (`Ask::Pipeline`, `app/services/ask/`). It's retrieval-augmented, but the model never counts:
 
 1. **Plan:** the model turns the question into a search phrase and keywords, a party and chamber filter, and the
@@ -230,8 +231,27 @@ The **Ask about votes and bills** box on the home page answers questions in five
 5. **Write:** the model writes 2–4 sentences from those computed numbers.
 
 The page shows every vote or bill used, how each vote was read, and what was found but judged not relevant. Unticking
-a vote or bill updates the totals. Questions and their results are saved in `questions`, and the page URL
-(`?question=<token>`) reopens one.
+a vote or bill updates the totals.
+
+**Recent activity.** Questions like "Give me the highlights of the last 7 days" or "What did the House do this
+week?" skip search and reading. `Ask::Activity` gathers everything in the window (1–90 days, 7 by default) in SQL:
+
+- every roll-call vote, grouped by measure (a nomination's cloture and confirmation votes together), with each
+  party's breakdown, whether it was party-line, and who broke with their party
+- bills introduced, by sponsor party and policy area, the most-cosponsored ones, and the most active sponsors
+- older bills whose latest action in the window moved them forward (passed a chamber, reported, sent to the
+  President, became law), rather than a referral to committee
+
+The model writes a short digest from a compact version of that, and the page lists all of it. Only each bill's
+*latest* action is synced, so a bill that passed and then got another action later in the window shows the later
+one.
+
+**Conversations.** Questions belong to a conversation (`conversations`, `?conversation=<token>` in the URL), so you
+can ask follow-ups like "What about Republicans?", "And in the House?" or "What did Democrats introduce?". The
+planner sees the last three answered questions with the plans they used and carries over the topic and filters;
+the writer sees the earlier answers so it doesn't repeat them. Each turn still searches and counts from scratch, so
+every number comes from that turn's own data. A follow-up waits until the answer before it is finished. Older
+`?question=<token>` links open the question's conversation.
 
 Limits: answers only cover the synced data (the most recent roll calls per chamber and current members' bills
 in the 119th Congress). Vague stances need judgment calls (is a resolution requesting a human-rights report
@@ -301,22 +321,24 @@ The frontend uses these JSON endpoints. Errors come back as `{ "error": { "code"
 | `GET /api/members/:bioguide_id/bills?role=sponsor\|cosponsor&page=` | Bills (20 per page) |
 | `GET /api/members/:bioguide_id/summary` | AI summary, read-only (`status: "none"` if never generated, `202` while generating) |
 | `POST /api/members/:bioguide_id/summary` | Generate or regenerate the AI summary |
-| `POST /api/questions` `{ "q": "..." }` | Starts answering a question (`202`); returns its `token` |
-| `GET /api/questions/:token` | Status and stage, then the answer, plan, and the votes/bills used with counts |
+| `POST /api/questions` `{ "q": "...", "conversation": token? }` | Starts answering a question (`202`); returns its `token` and `conversation` (a new one if none was given; `409` while the conversation's last question is still being answered) |
+| `GET /api/questions/:token` | Status and stage, then the answer, plan, and the votes/bills (or recent activity) used with counts |
+| `GET /api/conversations/:token` | Every question in the conversation, oldest first, in the same shape |
 | `GET /api/address_suggestions?q=<partial address or state>` | Up to 5 `{ label, kind: "address"\|"state" }` suggestions (3+ characters; cached for a day) |
 | `GET /api/representatives?q=<address or state>` | Senators + House member(s); for an address, also the matched address and district |
 | `WS /cable` → `MemberSummaryChannel` (`member_id`) | Summary status changes (Action Cable) |
 | `WS /cable` → `QuestionChannel` (`token`) | Question stage and status changes |
+| `WS /cable` → `ConversationChannel` (`token`) | Stage and status changes for any question in the conversation |
 
 ## Project layout
 
 ```
 app/controllers/api/        JSON API
-app/channels/               Action Cable channel for live summary status
+app/channels/               Action Cable channels for live summary, question and conversation status
 app/services/congress/      Data sync from Congress.gov, senate.gov, congress-legislators
 app/services/summaries/     AI summary: data packet, prompt + schema, Ollama client, evaluation
 app/services/search/        Search index for the question box: embeddings, indexer, hybrid retriever
-app/services/ask/           Question box: pipeline, prompts, vote meaning rules, SQL tally
+app/services/ask/           Question box: pipeline, prompts, vote meaning rules, SQL tally, recent activity
 app/services/district_lookup.rb   Address -> district via the Census Geocoder
 app/services/address_suggestions.rb  Address autocomplete via Photon
 app/services/member_summaries.rb  When to start a summary job

@@ -9,7 +9,8 @@ class AnswerQuestionJob < ApplicationJob
     question.update!(status: "running", stage: "planning", error: nil)
 
     pipeline = Ask::Pipeline.new
-    output = pipeline.call(question.text) { |stage| question.update!(stage:) }
+    history = question.conversation.history_before(question)
+    output = pipeline.call(question.text, history:) { |stage| question.update!(stage:) }
     question.update!(status: "complete", stage: nil, plan: output[:plan], result: output[:result], answer: output[:answer],
                      stats: output[:stats], model: pipeline.model)
   rescue Summaries::OllamaClient::Unavailable => e
