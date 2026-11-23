@@ -41,6 +41,14 @@ class AddressSuggestionsTest < ActiveSupport::TestCase
     assert_equal [ "Vermont", "100 State Street, San Juan, Puerto Rico 00901" ], labels
   end
 
+  test "when a house number is typed, drops addresses with a different number instead of suggesting a neighbor's" do
+    features = [ feature(**HOUSE, housenumber: "9402", street: "Reco Drive"), feature(**HOUSE, housenumber: "2300"),
+                 feature(**HOUSE, housenumber: "23") ]
+    assert_equal [ "2300 State Street, Montpelier, VT 05602" ], Canned.new(features).call("2300 state st").map(&:label)
+    assert_equal 2, Canned.new(features).call("23 sta").size # still typing: 23 and 2300 both fit
+    assert_empty Canned.new(features.first(1)).call("2300 state st")
+  end
+
   test "returns at most 5 suggestions" do
     features = (1..9).map { |n| feature(**HOUSE, housenumber: n.to_s) }
     assert_equal 5, Canned.new(features).call("State Street").size

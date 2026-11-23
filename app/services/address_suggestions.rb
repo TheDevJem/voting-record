@@ -6,6 +6,9 @@ require "net/http"
 #
 # Suggestions are just cleaner input: the chosen address still goes through DistrictLookup (Census Geocoder) to
 # find the district. Only full addresses and states are suggested, since those are what that search can resolve.
+# OpenStreetMap is missing many house numbers, and Photon then answers with a *different* house on a nearby street.
+# Picking one of those would search someone else's address, so when the user has typed a house number, only
+# addresses with that house number are suggested; otherwise the list stays empty and the typed text is searched as is.
 class AddressSuggestions
   ENDPOINT = "https://photon.komoot.io/api/".freeze
   USER_AGENT = "voting-record/1.0 (address autocomplete)".freeze
@@ -27,8 +30,8 @@ class AddressSuggestions
     query = query.to_s.squish
     return [] if query.length < MIN_LENGTH
 
-    Rails.cache.fetch([ "address_suggestions/v1", query.downcase ], expires_in: CACHE_FOR) do
-      parse(fetch(query)).map(&:to_h)
+    Rails.cache.fetch([ "address_suggestions/v2", query.downcase ], expires_in: CACHE_FOR) do
+      parse(fetch(query), house_number_in(query)).map(&:to_h)
     end.map { |h| Suggestion.new(**h) }
   end
 
@@ -49,16 +52,22 @@ class AddressSuggestions
     raise Unavailable, "Photon request failed (#{e.class.name.demodulize})"
   end
 
-  def parse(data)
-    Array(data["features"]).filter_map { |f| suggestion(f["properties"] || {}) }.uniq(&:label).first(LIMIT)
+  def parse(data, house_number)
+    Array(data["features"]).filter_map { |f| suggestion(f["properties"] || {}, house_number) }.uniq(&:label).first(LIMIT)
   end
 
-  def suggestion(p)
+  # "2300 Main St" => "2300"; "Main St" => nil. Matched as a prefix, so "23" still suggests 2300 while typing.
+  def house_number_in(query)
+    query[/\A(\d+[a-z]?)\b/i, 1]&.downcase
+  end
+
+  def suggestion(p, house_number)
     return unless COUNTRY_CODES.include?(p["countrycode"].to_s.upcase)
 
     case p["type"]
     when "house"
       return if p["housenumber"].blank? || p["street"].blank?
+      return if house_number && !p["housenumber"].to_s.downcase.start_with?(house_number)
 
       # "100 State Street, Montpelier, VT 05602": USPS style, the form the Census Geocoder documents.
       place = p["city"] || p["town"] || p["village"] || p["locality"] || p["county"]

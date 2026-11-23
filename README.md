@@ -81,7 +81,7 @@ for most systems (`brew install pgvector`, `apt install postgresql-17-pgvector`,
 image). For a Postgres installed with asdf or from source, build it against that install's `pg_config`:
 
 ```bash
-git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
+git clone --branch v0.8.7 --depth 1 https://github.com/pgvector/pgvector.git /tmp/pgvector
 cd /tmp/pgvector && make PG_CONFIG="$(which pg_config)" && make install PG_CONFIG="$(which pg_config)"
 ```
 
